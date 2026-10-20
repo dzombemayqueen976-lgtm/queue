@@ -1,0 +1,498 @@
+<title>Round Robin Scheduler</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+/* Layout: a control strip, then a CPU beside its ready queue, a Gantt timeline, and the job table with results. */
+:root {
+  --bg: #E8ECF2;
+  --surface: #FFFFFF;
+  --surface-2: #F1F4F8;
+  --fg: #161C2B;
+  --muted: #5A6477;
+  --line: #D2D9E3;
+  --accent: #D9480F;
+  --accent-fg: #FFFFFF;
+  --ok: #1F7A4D;
+  --p-ink: #FFFFFF;
+  --p1: #2F63D8;
+  --p2: #C2410C;
+  --p3: #1F8A5B;
+  --p4: #8B3FD0;
+  --p5: #C2185B;
+  --p6: #8A6D00;
+  --p7: #0E7C86;
+  --p8: #5B6B7B;
+  --font-display: 'Big Shoulders Display', 'Arial Narrow', sans-serif;
+  --font-body: 'Instrument Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0F131C;
+    --surface: #171D29;
+    --surface-2: #1E2635;
+    --fg: #E6EAF2;
+    --muted: #9AA5B8;
+    --line: #2B3547;
+    --accent: #FF8A57;
+    --accent-fg: #1A0C05;
+    --ok: #4CC38A;
+    --p-ink: #0B0F17;
+    --p1: #6FA0FF;
+    --p2: #FF8A57;
+    --p3: #4CC38A;
+    --p4: #C08BFF;
+    --p5: #FF6FA3;
+    --p6: #E2C84A;
+    --p7: #4CC7D1;
+    --p8: #A3B1C0;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0F131C;
+  --surface: #171D29;
+  --surface-2: #1E2635;
+  --fg: #E6EAF2;
+  --muted: #9AA5B8;
+  --line: #2B3547;
+  --accent: #FF8A57;
+  --accent-fg: #1A0C05;
+  --ok: #4CC38A;
+  --p-ink: #0B0F17;
+  --p1: #6FA0FF;
+  --p2: #FF8A57;
+  --p3: #4CC38A;
+  --p4: #C08BFF;
+  --p5: #FF6FA3;
+  --p6: #E2C84A;
+  --p7: #4CC7D1;
+  --p8: #A3B1C0;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.5;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 24px 32px;
+}
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.app { max-width: 1080px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px; }
+.c1 { --c: var(--p1); } .c2 { --c: var(--p2); } .c3 { --c: var(--p3); } .c4 { --c: var(--p4); }
+.c5 { --c: var(--p5); } .c6 { --c: var(--p6); } .c7 { --c: var(--p7); } .c8 { --c: var(--p8); }
+
+h1 { margin: 0; font-family: var(--font-display); font-weight: 800; font-size: 40px; line-height: 1; letter-spacing: .02em; text-transform: uppercase; text-wrap: balance; }
+.sub { margin: 6px 0 0; color: var(--muted); max-width: 64ch; }
+h2 { margin: 0 0 12px; font-family: var(--font-display); font-weight: 700; font-size: 22px; line-height: 1.1; letter-spacing: .06em; text-transform: uppercase; }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 18px; min-width: 0; }
+
+/* Controls */
+.controls { display: flex; flex-wrap: wrap; align-items: end; gap: 14px 20px; }
+.clock { font-family: var(--font-mono); font-size: 13px; color: var(--muted); }
+.clock b { display: block; font-family: var(--font-display); font-size: 44px; line-height: 1; letter-spacing: .02em; color: var(--fg); font-variant-numeric: tabular-nums; }
+.field { display: flex; flex-direction: column; gap: 5px; }
+.field label { font-size: 13px; font-weight: 500; color: var(--muted); }
+input[type="number"], select {
+  font: inherit;
+  padding: 9px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--fg);
+  width: 100%;
+}
+input[type="number"] { font-family: var(--font-mono); width: 84px; }
+select { width: auto; min-width: 130px; }
+.btns { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+.btn { font: 600 14px/1.2 var(--font-body); padding: 10px 16px; border-radius: 4px; border: 1px solid var(--line); background: var(--surface); color: var(--fg); cursor: pointer; }
+.btn:hover:not(:disabled) { filter: brightness(.95); }
+.btn:disabled { opacity: .4; cursor: not-allowed; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+.btn.small { padding: 6px 10px; font-size: 13px; font-weight: 500; }
+.status { margin: 14px 0 0; padding-top: 12px; border-top: 1px solid var(--line); font-family: var(--font-mono); font-size: 13px; color: var(--muted); min-height: 1.5em; }
+
+/* CPU and queue */
+.pipe { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 18px; align-items: stretch; }
+.cpu { border: 2px solid var(--line); border-radius: 6px; padding: 14px; background: var(--surface-2); display: flex; flex-direction: column; gap: 6px; justify-content: center; min-height: 128px; }
+.cpu.running { border-color: var(--c); }
+.cpu-id { font-family: var(--font-display); font-weight: 800; font-size: 56px; line-height: 1; letter-spacing: .02em; color: var(--c, var(--muted)); }
+.cpu-meta { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+.bar { height: 8px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--c); }
+.qends { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-family: var(--font-mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.queue { list-style: none; margin: 8px 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; min-height: 58px; align-items: stretch; }
+.chip { background: var(--c); color: var(--p-ink); border-radius: 4px; padding: 8px 12px; min-width: 72px; display: flex; flex-direction: column; }
+.chip b { font-family: var(--font-display); font-size: 24px; line-height: 1; letter-spacing: .02em; }
+.chip span { font-family: var(--font-mono); font-size: 11px; }
+.chip.front { outline: 2px solid var(--fg); outline-offset: 2px; }
+.qempty { margin: 0; color: var(--muted); align-self: center; }
+
+/* Timeline */
+.gantt { display: flex; overflow-x: auto; padding-bottom: 6px; min-height: 58px; }
+.g { flex: none; width: 30px; display: flex; flex-direction: column; }
+.gc { height: 36px; display: grid; place-items: center; background: var(--c); color: var(--p-ink); font: 600 13px var(--font-mono); border-right: 1px solid var(--surface); }
+.gc.idle { background: repeating-linear-gradient(135deg, var(--line) 0 4px, transparent 4px 8px); }
+.gt { font: 11px var(--font-mono); color: var(--muted); padding-top: 3px; }
+.gempty { margin: 0; color: var(--muted); }
+
+/* Lower grid */
+.lower { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 300px); gap: 18px; align-items: start; }
+.tablewrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th { text-align: left; font-size: 12px; font-weight: 500; color: var(--muted); padding: 0 10px 8px 0; white-space: nowrap; }
+td { padding: 8px 10px 8px 0; border-top: 1px solid var(--line); font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.mono { font-family: var(--font-mono); }
+.pid { display: inline-block; min-width: 38px; text-align: center; padding: 2px 8px; border-radius: 3px; background: var(--c); color: var(--p-ink); font-family: var(--font-mono); font-weight: 600; font-size: 13px; }
+.st-running { color: var(--accent); font-weight: 600; }
+.st-done { color: var(--ok); }
+form { display: flex; flex-direction: column; gap: 12px; }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.row2 input { width: 100%; }
+.hint { margin: 0; font-size: 12px; color: var(--muted); }
+.stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 16px 0 0; padding-top: 14px; border-top: 1px solid var(--line); }
+.stats dt { font-size: 12px; color: var(--muted); }
+.stats dd { margin: 0; font-family: var(--font-mono); font-size: 17px; font-weight: 500; }
+
+/* Trace */
+.trace ol { list-style: none; margin: 0; padding: 0; font-family: var(--font-mono); font-size: 13px; }
+.trace li { display: grid; grid-template-columns: 46px 76px minmax(0, 1fr) auto; gap: 4px 12px; align-items: baseline; padding: 7px 0; border-top: 1px solid var(--line); }
+.trace li:first-child { border-top: 0; }
+.tt { color: var(--muted); }
+.op-enqueue { color: var(--accent); font-weight: 500; }
+.op-dequeue { font-weight: 500; }
+.op-finish { color: var(--ok); font-weight: 500; }
+.osz { color: var(--muted); font-size: 12px; text-align: right; }
+.note { margin: 14px 0 0; padding-top: 14px; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px 20px; }
+.note p { margin: 0; color: var(--muted); font-size: 14px; max-width: 72ch; }
+.note .btns { margin-left: 0; }
+
+@media (max-width: 820px) {
+  .pipe, .lower { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 640px) {
+  h1 { font-size: 32px; }
+  .btns { margin-left: 0; width: 100%; }
+  .btns .btn { flex: 1 1 auto; }
+  .trace li { grid-template-columns: 40px 70px minmax(0, 1fr); }
+  .osz { grid-column: 3; text-align: left; }
+}
+</style>
+
+<div class="app">
+  <header>
+    <h1>Round Robin Scheduler</h1>
+    <p class="sub">How an operating system shares one CPU. Jobs wait in a first-in, first-out ready queue, run for one time slice, and an unfinished job goes back to the rear.</p>
+  </header>
+
+  <section class="panel" aria-label="Simulation controls">
+    <div class="controls">
+      <div class="clock">Clock<b id="time">0</b></div>
+      <div class="field">
+        <label for="quantum">Time slice (units)</label>
+        <input type="number" id="quantum" value="3" min="1" max="10">
+      </div>
+      <div class="field">
+        <label for="speed">Run speed</label>
+        <select id="speed">
+          <option value="900">Slow</option>
+          <option value="450" selected>Normal</option>
+          <option value="150">Fast</option>
+        </select>
+      </div>
+      <div class="btns">
+        <button class="btn" id="step" type="button">Step</button>
+        <button class="btn primary" id="run" type="button">Run</button>
+        <button class="btn" id="reset" type="button">Restart</button>
+      </div>
+    </div>
+    <p class="status" id="status" role="status" aria-live="polite"></p>
+  </section>
+
+  <section class="panel" aria-label="CPU and ready queue">
+    <h2>CPU and ready queue</h2>
+    <div class="pipe">
+      <div class="cpu" id="cpu"></div>
+      <div>
+        <div class="qends"><span>Front · dequeued next</span><span>Rear · new and preempted jobs join</span></div>
+        <ol class="queue" id="queue"></ol>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" aria-label="Timeline">
+    <h2>Timeline</h2>
+    <div class="gantt" id="gantt"></div>
+  </section>
+
+  <div class="lower">
+    <section class="panel" aria-label="Jobs">
+      <h2>Jobs</h2>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Job</th><th>Arrives</th><th>Burst</th><th>Left</th><th>Status</th><th>Turnaround</th><th>Waited</th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <dl class="stats">
+        <div><dt>Finished</dt><dd id="sDone">0</dd></div>
+        <div><dt>Avg wait</dt><dd id="sWait">–</dd></div>
+        <div><dt>CPU busy</dt><dd id="sBusy">–</dd></div>
+      </dl>
+    </section>
+
+    <section class="panel" aria-label="Add job">
+      <h2>Add a job</h2>
+      <form id="form" autocomplete="off">
+        <div class="row2">
+          <div class="field">
+            <label for="burst">Burst (units)</label>
+            <input type="number" id="burst" value="4" min="1" max="20">
+          </div>
+          <div class="field">
+            <label for="arr">Arrives at</label>
+            <input type="number" id="arr" min="0" max="60" placeholder="now">
+          </div>
+        </div>
+        <button class="btn primary" type="submit">Add job</button>
+        <p class="hint">Leave "Arrives at" empty to add the job at the current clock time.</p>
+      </form>
+    </section>
+  </div>
+
+  <section class="panel trace" aria-label="Queue operations">
+    <h2>Queue operations</h2>
+    <ol id="log"></ol>
+    <div class="note">
+      <p>A job that arrives, or is preempted after its slice, is <b>enqueued</b> at the rear. The CPU takes its next job by <b>dequeue</b> from the front. Because the queue is first in, first out, every job gets a turn in order and none is starved. Sample jobs are loaded.</p>
+      <div class="btns">
+        <button class="btn small" id="sample" type="button">Load sample</button>
+        <button class="btn small" id="clear" type="button">Clear all</button>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+(function () {
+  // First-in, first-out queue with head and tail indexes, so enqueue and dequeue are O(1).
+  class Queue {
+    #items = {};
+    #head = 0;
+    #tail = 0;
+    enqueue(x) { this.#items[this.#tail++] = x; }
+    dequeue() {
+      if (this.isEmpty()) return undefined;
+      const x = this.#items[this.#head];
+      delete this.#items[this.#head++];
+      return x;
+    }
+    peek() { return this.isEmpty() ? undefined : this.#items[this.#head]; }
+    isEmpty() { return this.#head === this.#tail; }
+    get size() { return this.#tail - this.#head; }
+    toArray() {
+      const out = [];
+      for (let i = this.#head; i < this.#tail; i++) out.push(this.#items[i]);
+      return out;
+    }
+    clear() { this.#items = {}; this.#head = 0; this.#tail = 0; }
+  }
+
+  const ready = new Queue();
+  let procs = [];
+  let seq = 0;
+  let time = 0;
+  let cpu = null;
+  let slice = 0;
+  let gantt = [];
+  let ops = [];
+  let timer = null;
+
+  const $ = (id) => document.getElementById(id);
+  const cls = (n) => 'c' + (((n - 1) % 8) + 1);
+  const quantum = () => { const v = parseInt($('quantum').value, 10); return v > 0 ? v : 3; };
+  const allDone = () => procs.length > 0 && procs.every((p) => p.state === 'done');
+  const setStatus = (t) => { $('status').textContent = t; };
+
+  function logOp(op, text) {
+    ops.unshift({ op, text, t: time, size: ready.size });
+    if (ops.length > 10) ops.pop();
+  }
+
+  // Move every job whose arrival time has come into the ready queue.
+  function admit() {
+    procs
+      .filter((p) => p.state === 'new' && p.arrival <= time)
+      .sort((a, b) => a.arrival - b.arrival || a.n - b.n)
+      .forEach((p) => {
+        p.state = 'ready';
+        ready.enqueue(p);
+        logOp('enqueue', 'P' + p.n + ' arrives (' + p.remaining + ' left)');
+      });
+  }
+
+  // Advance the simulation by one time unit.
+  function step() {
+    if (!procs.length || allDone()) return false;
+    admit();
+    if (!cpu && ready.size) {
+      cpu = ready.dequeue();
+      cpu.state = 'running';
+      slice = 0;
+      logOp('dequeue', 'P' + cpu.n + ' goes to the CPU');
+    }
+    if (!cpu) {
+      gantt.push(0);
+      time++;
+      admit();
+      return true;
+    }
+    cpu.remaining--;
+    slice++;
+    gantt.push(cpu.n);
+    time++;
+    admit();
+    if (cpu.remaining <= 0) {
+      cpu.state = 'done';
+      cpu.finish = time;
+      logOp('finish', 'P' + cpu.n + ' finished');
+      cpu = null;
+    } else if (slice >= quantum()) {
+      cpu.state = 'ready';
+      ready.enqueue(cpu);
+      logOp('enqueue', 'P' + cpu.n + ' preempted (' + cpu.remaining + ' left)');
+      cpu = null;
+    }
+    return true;
+  }
+
+  function stop() {
+    if (timer) { clearInterval(timer); timer = null; }
+  }
+
+  function resetSim() {
+    stop();
+    ready.clear();
+    time = 0; cpu = null; slice = 0; gantt = []; ops = [];
+    procs.forEach((p) => { p.remaining = p.burst; p.state = 'new'; p.finish = null; });
+  }
+
+  function addProc(burst, arrival) {
+    const p = { n: ++seq, arrival, burst, remaining: burst, state: 'new', finish: null };
+    procs.push(p);
+    return p;
+  }
+
+  function loadSample() {
+    stop();
+    procs = []; seq = 0;
+    resetSim();
+    [[0, 5], [1, 3], [2, 8], [3, 2], [6, 4]].forEach(([a, b]) => addProc(b, a));
+    for (let i = 0; i < 7; i++) step();
+    setStatus('Sample jobs loaded and paused at clock 7. Press Step or Run to continue.');
+    render();
+  }
+
+  function render() {
+    $('time').textContent = time;
+
+    // CPU
+    const cpuEl = $('cpu');
+    if (cpu) {
+      cpuEl.className = 'cpu running ' + cls(cpu.n);
+      cpuEl.innerHTML = '<div class="cpu-id">P' + cpu.n + '</div>' +
+        '<div class="cpu-meta">Slice ' + slice + ' of ' + quantum() + ' · ' + cpu.remaining + ' left</div>' +
+        '<div class="bar"><i style="width:' + Math.min(100, Math.round((slice / quantum()) * 100)) + '%"></i></div>';
+    } else {
+      cpuEl.className = 'cpu';
+      cpuEl.innerHTML = '<div class="cpu-id">Idle</div><div class="cpu-meta">' + (allDone() ? 'All jobs finished' : 'Waiting for a job') + '</div>';
+    }
+
+    // Ready queue (front first)
+    const q = ready.toArray();
+    $('queue').innerHTML = q.length
+      ? q.map((p, i) => '<li class="chip ' + cls(p.n) + (i === 0 ? ' front' : '') + '"><b>P' + p.n + '</b><span>' + p.remaining + ' left</span></li>').join('')
+      : '<li class="qempty">The ready queue is empty.</li>';
+
+    // Timeline
+    const g = $('gantt');
+    g.innerHTML = gantt.length
+      ? gantt.map((n, i) => '<div class="g"><div class="gc ' + (n ? cls(n) : 'idle') + '" title="Clock ' + i + ' to ' + (i + 1) + ': ' + (n ? 'P' + n : 'idle') + '">' + (n || '') + '</div><span class="gt">' + i + '</span></div>').join('')
+      : '<p class="gempty">Press Step or Run to draw the timeline.</p>';
+    g.scrollLeft = g.scrollWidth;
+
+    // Job table
+    $('rows').innerHTML = procs.length ? procs.map((p) => {
+      let status;
+      if (p.state === 'new') status = 'Arrives at ' + p.arrival;
+      else if (p.state === 'ready') status = 'Queued, position ' + (q.indexOf(p) + 1);
+      else if (p.state === 'running') status = '<span class="st-running">Running</span>';
+      else status = '<span class="st-done">Done at ' + p.finish + '</span>';
+      const done = p.state === 'done';
+      return '<tr><td><span class="pid ' + cls(p.n) + '">P' + p.n + '</span></td><td class="mono">' + p.arrival + '</td><td class="mono">' + p.burst + '</td><td class="mono">' + p.remaining + '</td><td>' + status + '</td>' +
+        '<td class="mono">' + (done ? p.finish - p.arrival : '–') + '</td><td class="mono">' + (done ? p.finish - p.arrival - p.burst : '–') + '</td></tr>';
+    }).join('') : '<tr><td colspan="7">No jobs yet. Add one to begin.</td></tr>';
+
+    // Results
+    const fin = procs.filter((p) => p.state === 'done');
+    $('sDone').textContent = fin.length + ' / ' + procs.length;
+    $('sWait').textContent = fin.length ? (fin.reduce((s, p) => s + (p.finish - p.arrival - p.burst), 0) / fin.length).toFixed(1) : '–';
+    const busy = gantt.filter(Boolean).length;
+    $('sBusy').textContent = gantt.length ? Math.round((busy / gantt.length) * 100) + '%' : '–';
+
+    // Controls
+    const over = !procs.length || allDone();
+    $('step').disabled = over;
+    $('run').disabled = over;
+    $('run').textContent = timer ? 'Pause' : 'Run';
+
+    // Trace
+    $('log').innerHTML = ops.length
+      ? ops.map((o) => '<li><span class="tt">t=' + o.t + '</span><span class="op-' + o.op + '">' + o.op + '</span><span>' + o.text + '</span><span class="osz">queue size ' + o.size + '</span></li>').join('')
+      : '<li><span>No operations yet.</span></li>';
+  }
+
+  function finishCheck() {
+    if (allDone()) {
+      stop();
+      setStatus('All jobs finished at clock ' + time + '.');
+    }
+  }
+
+  $('step').addEventListener('click', () => { stop(); step(); setStatus('Advanced one time unit to clock ' + time + '.'); finishCheck(); render(); });
+  $('run').addEventListener('click', () => {
+    if (timer) { stop(); setStatus('Paused at clock ' + time + '.'); render(); return; }
+    timer = setInterval(() => { step(); finishCheck(); render(); }, parseInt($('speed').value, 10));
+    setStatus('Running.');
+    render();
+  });
+  $('speed').addEventListener('change', () => {
+    if (timer) { stop(); timer = setInterval(() => { step(); finishCheck(); render(); }, parseInt($('speed').value, 10)); }
+  });
+  $('quantum').addEventListener('input', render);
+  $('reset').addEventListener('click', () => { resetSim(); setStatus('Restarted at clock 0 with the same jobs.'); render(); });
+  $('sample').addEventListener('click', loadSample);
+  $('clear').addEventListener('click', () => { stop(); procs = []; seq = 0; resetSim(); setStatus('All jobs cleared. Add a job to begin.'); render(); });
+  $('form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const burst = parseInt($('burst').value, 10);
+    if (!(burst > 0)) { setStatus('Enter a burst time of at least 1 unit.'); $('burst').focus(); return; }
+    const raw = $('arr').value.trim();
+    const arrival = raw === '' ? time : Math.max(0, Math.min(60, parseInt(raw, 10) || 0));
+    const p = addProc(Math.min(20, burst), Math.max(arrival, 0));
+    admit();
+    setStatus('P' + p.n + ' added with burst ' + p.burst + ', arriving at ' + p.arrival + '.');
+    $('arr').value = '';
+    render();
+  });
+
+  loadSample();
+})();
+</script>
